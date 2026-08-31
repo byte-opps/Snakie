@@ -25,17 +25,32 @@ const COMPLETION_MAX_TOKENS = 64
 
 /** Config that distinguishes one OpenAI-compatible backend from another. */
 export interface OpenAiCompatibleConfig {
+  /** Provider metadata surfaced to the renderer. */
   info: ProviderInfo
+  /** Base URL up to (but not including) `/chat/completions`. */
   baseURL: string
+  /** Extra headers to merge in (beyond Authorization). */
   extraHeaders?: Record<string, string>
+  /** Model ids that should send a `reasoning_effort` field when an effort is set. */
   reasoningModels?: string[]
+  /**
+   * Optional hook to turn the stored key into the actual bearer token. Used by
+   * GitHub Copilot, which exchanges a GitHub PAT/OAuth token for a short-lived
+   * Copilot token. When absent, the stored key is sent as the bearer directly.
+   */
   resolveBearer?: (apiKey: string, signal?: AbortSignal) => Promise<string>
 }
 
+/** One SSE line's parsed delta shape (only the fields we read). */
 interface ChatCompletionChunk {
   choices?: Array<{ delta?: { content?: string | null } }>
 }
 
+/**
+ * Parse a single OpenAI-style SSE `data:` payload, returning the text delta it
+ * carries (or null when it's `[DONE]`, a keep-alive, or has no content). Pure
+ * and exported so the wire-format handling can be unit-tested.
+ */
 export function parseOpenAiSsePayload(payload: string): string | null {
   const trimmed = payload.trim()
   if (!trimmed || trimmed === '[DONE]') return null
@@ -47,6 +62,10 @@ export function parseOpenAiSsePayload(payload: string): string | null {
   }
 }
 
+/**
+ * Stream a chat completion against an OpenAI-style `/chat/completions` endpoint.
+ * Returns the assembled text once `[DONE]` (or the stream end) is reached.
+ */
 export async function streamOpenAiCompatible(
   config: OpenAiCompatibleConfig,
   args: StreamChatArgs
@@ -89,6 +108,10 @@ export async function streamOpenAiCompatible(
   return await consumeSse(res.body, onDelta)
 }
 
+/**
+ * One-shot (non-streaming) completion against an OpenAI-style endpoint.
+ * Returns the assembled text directly — used for inline code completions.
+ */
 export async function completeOpenAiCompatible(
   config: OpenAiCompatibleConfig,
   args: CompleteArgs
@@ -187,6 +210,10 @@ async function safeErrorText(res: Response): Promise<string> {
   }
 }
 
+/**
+ * Factory: wrap an {@link OpenAiCompatibleConfig} into a full {@link Provider}
+ * with `streamChat` and `complete` methods wired to the OpenAI SSE wire format.
+ */
 export function makeOpenAiCompatibleProvider(config: OpenAiCompatibleConfig): Provider {
   return {
     info: config.info,
@@ -257,8 +284,15 @@ export const copilotProvider = makeOpenAiCompatibleProvider({
 
 // ── Local LLM (OpenAI-compatible) ─────────────────────────────────────────
 
+/** Stable id for the local/self-hosted LLM provider. */
 const LOCAL_ID = 'local'
 
+/**
+ * Provider info for the local LLM backend. `customModel: true` tells the
+ * renderer to render a free-text model input instead of a fixed dropdown,
+ * because the available models depend on whatever the user's local server is
+ * running.
+ */
 export const LOCAL_INFO: ProviderInfo = {
   id: LOCAL_ID,
   label: 'Local LLM',
@@ -269,6 +303,12 @@ export const LOCAL_INFO: ProviderInfo = {
   keyHint: 'API key (optional — leave blank for no auth)'
 }
 
+/**
+ * Local LLM provider. Reads its base URL from the per-provider config store on
+ * each request (defaults to `http://localhost:11434/v1` for Ollama). When the
+ * local server is not running, the fetch will fail with a connection-refused
+ * error surfaced to the user as a chat error message.
+ */
 export const localProvider: Provider = {
   info: LOCAL_INFO,
   async streamChat(args: StreamChatArgs): Promise<string> {
